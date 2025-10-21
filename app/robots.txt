@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Sitemap: https://rada.example.com/sitemap.xml
+
+
