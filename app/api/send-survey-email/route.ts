@@ -3,7 +3,14 @@ import { Resend } from "resend";
 import React from "react";
 import SurveyConfirmationEmail from "@/emails/SurveyConfirmation";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+// Initialize Resend lazily to avoid build-time errors
+let resend: Resend;
+function getResendClient() {
+  if (!resend) {
+    resend = new Resend(process.env.RESEND_API_KEY || "");
+  }
+  return resend;
+}
 
 export async function POST(request: Request) {
   try {
@@ -18,7 +25,7 @@ export async function POST(request: Request) {
     }
 
     // Send email using Resend with React component
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await getResendClient().emails.send({
       from: process.env.RESEND_FROM_EMAIL || "Rada <onboarding@resend.dev>",
       to: [email],
       subject: "Your personalized AI tool recommendations are on the way",
