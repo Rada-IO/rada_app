@@ -1,244 +1,461 @@
 "use client";
-import { useEffect, useMemo, useReducer } from "react";
+import { useEffect, useState } from "react";
+import posthog from "posthog-js";
 import Link from "next/link";
-import { quizSchema, type QuizPayload } from "@/lib/validation";
-import { trackEvent as track } from "@/lib/analytics";
 
-type Step = 1 | 2 | 3 | 4 | 5 | 6;
+// Force dynamic rendering
+export const dynamic = "force-dynamic";
 
-type State = { step: Step; data: Partial<QuizPayload>; errors: Record<string, string>; submitting: boolean; ok: boolean };
-type Action =
-  | { type: "set"; key: keyof QuizPayload; value: unknown }
-  | { type: "next" }
-  | { type: "back" }
-  | { type: "errors"; errors: Record<string, string> }
-  | { type: "submitting"; submitting: boolean }
-  | { type: "ok" };
+const SURVEY_ID = "019a2d07-fc22-0000-7161-744841e9b51c";
 
-function reducer(state: State, action: Action): State {
-  switch (action.type) {
-    case "set":
-      return { ...state, data: { ...state.data, [action.key]: action.value } };
-    case "next":
-      return { ...state, step: (Math.min(6, (state.step + 1)) as Step) };
-    case "back":
-      return { ...state, step: (Math.max(1, (state.step - 1)) as Step) };
-    case "errors":
-      return { ...state, errors: action.errors };
-    case "submitting":
-      return { ...state, submitting: action.submitting };
-    case "ok":
-      return { ...state, ok: true };
-  }
-}
+type SurveyData = {
+  mainGoal?: string;
+  budget?: string;
+  experience?: string;
+  role?: string;
+  email?: string;
+  frustrations?: string[];
+};
 
 export default function GetRecommendationPage() {
-  const [state, dispatch] = useReducer(reducer, { step: 1, data: { integrations: [] }, errors: {}, submitting: false, ok: false });
-  const { step, data, errors, submitting, ok } = state;
-  const total = 6;
+  const [step, setStep] = useState(1);
+  const [data, setData] = useState<SurveyData>({});
+  const [error, setError] = useState<string>("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isComplete, setIsComplete] = useState(false);
 
+  const totalSteps = 6;
+
+  // Track page view
   useEffect(() => {
-    // hydrate from sessionStorage
-    try {
-      const saved = sessionStorage.getItem("rada-quiz");
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed && typeof parsed === "object") Object.entries(parsed).forEach(([k, v]) => dispatch({ type: "set", key: k as keyof QuizPayload, value: v }));
-      }
-    } catch {}
-    track("quiz_start");
+    if (typeof window !== "undefined" && posthog) {
+      posthog.capture("survey_started", {
+        survey_id: SURVEY_ID,
+        survey_name: "Rada",
+      });
+    }
   }, []);
 
-  useEffect(() => {
-    try { sessionStorage.setItem("rada-quiz", JSON.stringify(data)); } catch {}
-  }, [data]);
+  const validateStep = (): boolean => {
+    setError("");
 
-  const progress = useMemo(() => `${step} of ${total}`, [step]);
-
-  const onNext = () => {
-    const currentValidation = (() => {
-      if (step === 1) return quizSchema.pick({ useCase: true });
-      if (step === 2) return quizSchema.pick({ budget: true });
-      if (step === 3) return quizSchema.pick({ experience: true });
-      if (step === 4) return quizSchema.pick({ integrations: true });
-      if (step === 5) return quizSchema.pick({ email: true });
-      return quizSchema.pick({ problem: true }).partial();
-    })();
-    const res = currentValidation.safeParse(data);
-    if (!res.success) {
-      const e: Record<string, string> = {};
-      for (const issue of res.error.issues) e[issue.path[0] as string] = issue.message;
-      dispatch({ type: "errors", errors: e });
-      return;
+    switch (step) {
+      case 1:
+        if (!data.mainGoal) {
+          setError("Please select your main goal");
+          return false;
+        }
+        break;
+      case 2:
+        if (!data.budget) {
+          setError("Please select your budget");
+          return false;
+        }
+        break;
+      case 3:
+        if (!data.experience) {
+          setError("Please select your experience level");
+          return false;
+        }
+        break;
+      case 4:
+        if (!data.role) {
+          setError("Please select your role");
+          return false;
+        }
+        break;
+      case 5:
+        if (!data.email) {
+          setError("Please enter your email");
+          return false;
+        }
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(data.email)) {
+          setError("Please enter a valid email address");
+          return false;
+        }
+        break;
+      case 6:
+        // Frustrations are optional
+        break;
     }
-    dispatch({ type: "errors", errors: {} });
-    dispatch({ type: "next" });
-    track("quiz_step_completed", { step });
+
+    return true;
   };
 
-  const onBack = () => dispatch({ type: "back" });
+  const nextStep = () => {
+    if (!validateStep()) return;
 
-  const onSubmit = async () => {
-    const res = quizSchema.safeParse(data);
-    if (!res.success) {
-      const e: Record<string, string> = {};
-      for (const issue of res.error.issues) e[issue.path[0] as string] = issue.message;
-      dispatch({ type: "errors", errors: e });
-      return;
+    // Track step completion
+    if (typeof window !== "undefined" && posthog) {
+      posthog.capture("survey_step_completed", {
+        survey_id: SURVEY_ID,
+        step: step,
+        step_name: getStepName(step),
+      });
     }
+
+    if (step < totalSteps) {
+      setStep(step + 1);
+    } else {
+      submitSurvey();
+    }
+  };
+
+  const prevStep = () => {
+    if (step > 1) {
+      setStep(step - 1);
+      setError("");
+    }
+  };
+
+  const getStepName = (stepNum: number): string => {
+    const names = ["main_goal", "budget", "experience", "role", "email", "frustrations"];
+    return names[stepNum - 1] || "";
+  };
+
+  const submitSurvey = async () => {
+    setIsSubmitting(true);
+    setError("");
+
     try {
-      dispatch({ type: "submitting", submitting: true });
-      const url = new URL(typeof window !== "undefined" ? window.location.href : "http://localhost");
-      const utm = {
-        source: url.searchParams.get("utm_source") || undefined,
-        medium: url.searchParams.get("utm_medium") || undefined,
-        campaign: url.searchParams.get("utm_campaign") || undefined,
-      };
-      const payload: QuizPayload = { ...res.data, utm };
-      const resp = await fetch("/api/lead", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-      if (!resp.ok) throw new Error("Failed");
-      track("lead_submitted", { useCase: payload.useCase, budget: payload.budget, experience: payload.experience });
-      dispatch({ type: "ok" });
-      track("lead_success");
+      // Submit survey response to PostHog
+      if (typeof window !== "undefined" && posthog) {
+        posthog.capture("survey_completed", {
+          survey_id: SURVEY_ID,
+          survey_name: "Rada",
+          $survey_response: data.mainGoal,
+          $survey_response_1: data.mainGoal,
+          $survey_response_2: data.budget,
+          $survey_response_3: data.experience,
+          $survey_response_4: data.role,
+          $survey_response_5: data.email,
+          $survey_response_6: data.frustrations?.join(", ") || "",
+          // Also send as individual properties for easier analysis
+          main_goal: data.mainGoal,
+          budget: data.budget,
+          experience: data.experience,
+          role: data.role,
+          email: data.email,
+          frustrations: data.frustrations,
+        });
+
+        // Identify user by email
+        if (data.email) {
+          posthog.identify(data.email, {
+            email: data.email,
+            role: data.role,
+            budget: data.budget,
+            experience: data.experience,
+          });
+        }
+
+        console.log("Survey submitted to PostHog:", data);
+      }
+
+      // Send confirmation email
+      const emailResponse = await fetch("/api/send-survey-email", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email: data.email,
+          mainGoal: data.mainGoal,
+          budget: data.budget,
+          experience: data.experience,
+          role: data.role,
+        }),
+      });
+
+      if (!emailResponse.ok) {
+        console.error("Failed to send confirmation email");
+        // Don't block the user experience if email fails
+        // Just log the error and continue
+      }
+
+      setIsComplete(true);
+    } catch (err) {
+      console.error("Error submitting survey:", err);
+      setError("Failed to submit. Please try again.");
     } finally {
-      dispatch({ type: "submitting", submitting: false });
+      setIsSubmitting(false);
     }
   };
 
-  if (ok) return <Success />;
+  if (isComplete) {
+    return (
+      <main className="min-h-[80vh] flex items-center justify-center px-4">
+        <div className="w-full max-w-2xl mx-auto">
+          <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-xl p-8 text-center">
+            <div className="text-6xl mb-4">🎉</div>
+            <h1 className="text-3xl font-semibold mb-3">Thank you!</h1>
+            <p className="text-gray-600 dark:text-gray-300 mb-6">
+              We&rsquo;ve received your responses and sent a confirmation email to <strong>{data.email}</strong>.
+              We&rsquo;ll prepare personalized AI tool recommendations and send them to you within 24-48 hours.
+            </p>
+            <div className="flex gap-3 justify-center">
+              <Link
+                href="/"
+                className="px-6 py-3 rounded-xl border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 transition"
+              >
+                Back to Home
+              </Link>
+              <button
+                onClick={() => window.location.reload()}
+                className="btn-gradient px-6 py-3 rounded-xl text-white hover:opacity-90 transition"
+              >
+                Take Quiz Again
+              </button>
+            </div>
+          </div>
+        </div>
+      </main>
+    );
+  }
 
   return (
-    <main className="min-h-[80vh] mx-auto max-w-md px-4 py-10">
-      <div className="rounded-2xl bg-white/90 dark:bg-neutral-900/90 shadow-sm ring-1 ring-black/5 p-6 md:p-8">
-        <h1 className="text-2xl md:text-3xl font-semibold tracking-tight">Get your recommendation</h1>
-        <div className="mt-1 flex items-center justify-between text-sm text-gray-600 dark:text-gray-300">
-          <p>Step {progress}</p>
-        </div>
-        <div className="mt-2 h-1.5 bg-neutral-200/70 rounded-full"><div className="h-1.5 bg-neutral-900 rounded-full" style={{ width: `${(step/total)*100}%` }} /></div>
-
-        <div className="mt-6 space-y-6">
-          {step === 1 && (
-            <fieldset>
-              <legend className="text-xl font-semibold">What are you trying to do?</legend>
-              <div className="mt-3 grid gap-2">
-                {["marketing","content","coding","automation","design","other"].map((v)=> (
-                  <label key={v} className="inline-flex items-center gap-2 rounded-xl border px-4 py-3 data-[checked=true]:bg-neutral-900 data-[checked=true]:text-white" data-checked={data.useCase===v}>
-                    <input type="radio" name="useCase" value={v} className="sr-only" onChange={(ev)=> dispatch({ type: "set", key: "useCase", value: ev.target.value })} />
-                    <span className="capitalize">{v}</span>
-                  </label>
-                ))}
-              </div>
-              {errors.useCase && <p className="mt-2 text-sm text-red-600">{errors.useCase}</p>}
-            </fieldset>
-          )}
-
-          {step === 2 && (
-            <fieldset>
-              <legend className="text-xl font-semibold">What’s your budget?</legend>
-              <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">(We’ll only recommend tools that actually fit.)</p>
-              <div className="mt-3 grid gap-2">
-                {["free","<20","20-100",">100"].map((v)=> (
-                  <label key={v} className="inline-flex items-center gap-2 rounded-xl border px-4 py-3 data-[checked=true]:bg-neutral-900 data-[checked=true]:text-white" data-checked={data.budget===v}>
-                    <input type="radio" name="budget" value={v} className="sr-only" onChange={(ev)=> dispatch({ type: "set", key: "budget", value: ev.target.value })} />
-                    <span>{v==="<20"?"< $20": v==="20-100"?"$20–$100": v===">100"?"$100+":"Free"}</span>
-                  </label>
-                ))}
-              </div>
-              {errors.budget && <p className="mt-2 text-sm text-red-600">{errors.budget}</p>}
-            </fieldset>
-          )}
-
-          {step === 3 && (
-            <fieldset>
-              <legend className="text-xl font-semibold">What’s your experience level?</legend>
-              <div className="mt-3 grid gap-2">
-                {["beginner","intermediate","advanced"].map((v)=> (
-                  <label key={v} className="inline-flex items-center gap-2 rounded-xl border px-4 py-3 data-[checked=true]:bg-neutral-900 data-[checked=true]:text-white" data-checked={data.experience===v}>
-                    <input type="radio" name="experience" value={v} className="sr-only" onChange={(ev)=> dispatch({ type: "set", key: "experience", value: ev.target.value })} />
-                    <span className="capitalize">{v}</span>
-                  </label>
-                ))}
-              </div>
-              {errors.experience && <p className="mt-2 text-sm text-red-600">{errors.experience}</p>}
-            </fieldset>
-          )}
-
-          {step === 4 && (
-            <fieldset>
-              <legend className="text-xl font-semibold">Any required integrations? <span className="text-sm font-normal text-gray-500">(optional)</span></legend>
-              <div className="mt-3 grid grid-cols-2 gap-2">
-                {["Notion","Zapier","Slack","Google Drive"].map((v)=> {
-                  const checked = (data.integrations||[]).includes(v);
-                  return (
-                    <label key={v} className="inline-flex items-center gap-2 rounded-xl border px-4 py-3 data-[checked=true]:bg-neutral-900 data-[checked=true]:text-white" data-checked={checked}>
-                      <input type="checkbox" className="sr-only" checked={checked} onChange={()=> {
-                        const next = checked ? (data.integrations||[]).filter((x)=> x!==v) : [...(data.integrations||[]), v];
-                        dispatch({ type: "set", key: "integrations", value: next });
-                      }} />
-                      <span>{v}</span>
-                    </label>
-                  );
-                })}
-              </div>
-              <button type="button" className="mt-3 text-sm underline" onClick={()=> dispatch({ type: "set", key: "integrations", value: [] })}>Skip this step</button>
-            </fieldset>
-          )}
-
-          {step === 5 && (
-            <fieldset>
-              <legend className="text-xl font-semibold">Where should we send your picks?</legend>
-              <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">(We’ll only email your recommendations. No spam.)</p>
-              <input
-                type="email"
-                className="mt-3 w-full rounded-xl border px-4 py-3"
-                placeholder="you@example.com"
-                aria-invalid={Boolean(errors.email)}
-                onChange={(e)=> dispatch({ type: "set", key: "email", value: e.target.value })}
+    <main className="min-h-[80vh] flex items-center justify-center px-4 py-8">
+      <div className="w-full max-w-2xl mx-auto">
+        <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-xl p-6 md:p-8">
+          {/* Progress Bar */}
+          <div className="mb-6">
+            <div className="flex items-center justify-between text-sm text-gray-600 dark:text-gray-400 mb-2">
+              <span>Question {step} of {totalSteps}</span>
+              <span>{Math.round((step / totalSteps) * 100)}% Complete</span>
+            </div>
+            <div className="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-gradient-to-r from-violet-500 to-indigo-600 transition-all duration-300"
+                style={{ width: `${(step / totalSteps) * 100}%` }}
               />
-              {/* Honeypot */}
-              <div className="hidden" aria-hidden>
-                <label htmlFor="company">Company</label>
-                <input id="company" type="text" onChange={(ev)=> dispatch({ type: "set", key: "honey" as keyof QuizPayload, value: (ev.target as HTMLInputElement).value })} />
+            </div>
+          </div>
+
+          {/* Question Content */}
+          <div className="min-h-[300px]">
+            {/* Step 1: Main Goal */}
+            {step === 1 && (
+              <div>
+                <h2 className="text-2xl font-semibold mb-2">What&rsquo;s your main goal or use case?</h2>
+                <p className="text-sm text-gray-600 dark:text-gray-400 mb-6">
+                  Select the option that best describes what you want to achieve
+                </p>
+                <div className="space-y-3">
+                  {[
+                    "Marketing content creation",
+                    "Writing / Copywriting",
+                    "Coding / Development",
+                    "Design / Visual assets",
+                    "Productivity & Workflow Automation",
+                    "Education / Learning",
+                    "Audio & video editing",
+                  ].map((option) => (
+                    <button
+                      key={option}
+                      onClick={() => setData({ ...data, mainGoal: option })}
+                      className={`w-full text-left px-5 py-4 rounded-xl border-2 transition ${
+                        data.mainGoal === option
+                          ? "border-violet-500 bg-violet-50 dark:bg-violet-900/20"
+                          : "border-gray-200 dark:border-gray-700 hover:border-violet-300 dark:hover:border-violet-700"
+                      }`}
+                    >
+                      <span className="font-medium">{option}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
-              {errors.email && <p className="mt-2 text-sm text-red-600">{errors.email}</p>}
-            </fieldset>
+            )}
+
+            {/* Step 2: Budget */}
+            {step === 2 && (
+              <div>
+                <h2 className="text-2xl font-semibold mb-2">What&rsquo;s your budget?</h2>
+                <p className="text-sm text-gray-600 dark:text-gray-400 mb-6">
+                  We&rsquo;ll only recommend tools that fit your budget
+                </p>
+                <div className="space-y-3">
+                  {[
+                    { value: "Free — I only want free tools", label: "Free — I only want free tools" },
+                    { value: "<$20 / month — Small solo budget", label: "<$20 / month — Small solo budget" },
+                    { value: "$20–$100 / month — Willing to invest in tools", label: "$20–$100 / month — Willing to invest" },
+                    { value: "$100+ / month — Professional or team plan", label: "$100+ / month — Professional or team" },
+                  ].map((option) => (
+                    <button
+                      key={option.value}
+                      onClick={() => setData({ ...data, budget: option.value })}
+                      className={`w-full text-left px-5 py-4 rounded-xl border-2 transition ${
+                        data.budget === option.value
+                          ? "border-violet-500 bg-violet-50 dark:bg-violet-900/20"
+                          : "border-gray-200 dark:border-gray-700 hover:border-violet-300 dark:hover:border-violet-700"
+                      }`}
+                    >
+                      <span className="font-medium">{option.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Step 3: Experience */}
+            {step === 3 && (
+              <div>
+                <h2 className="text-2xl font-semibold mb-2">What best describes your experience level with AI tools?</h2>
+                <div className="space-y-3 mt-6">
+                  {[
+                    { value: "Beginner — I'm just exploring what's out there", label: "Beginner", desc: "I'm just exploring what's out there" },
+                    { value: "Intermediate — I've used a few tools and know the basics", label: "Intermediate", desc: "I've used a few tools and know the basics" },
+                    { value: "Advanced — I use AI tools regularly and want more power/customization", label: "Advanced", desc: "I use AI tools regularly and want more power" },
+                  ].map((option) => (
+                    <button
+                      key={option.value}
+                      onClick={() => setData({ ...data, experience: option.value })}
+                      className={`w-full text-left px-5 py-4 rounded-xl border-2 transition ${
+                        data.experience === option.value
+                          ? "border-violet-500 bg-violet-50 dark:bg-violet-900/20"
+                          : "border-gray-200 dark:border-gray-700 hover:border-violet-300 dark:hover:border-violet-700"
+                      }`}
+                    >
+                      <div className="font-medium">{option.label}</div>
+                      <div className="text-sm text-gray-600 dark:text-gray-400 mt-1">{option.desc}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Step 4: Role */}
+            {step === 4 && (
+              <div>
+                <h2 className="text-2xl font-semibold mb-2">Who are you?</h2>
+                <p className="text-sm text-gray-600 dark:text-gray-400 mb-6">
+                  This helps us tailor recommendations to your role
+                </p>
+                <div className="space-y-3">
+                  {[
+                    "Founder / Entrepreneur",
+                    "Marketer / Growth professional",
+                    "Developer / Engineer",
+                    "Designer / Creative",
+                    "Product Manager",
+                    "Other",
+                  ].map((option) => (
+                    <button
+                      key={option}
+                      onClick={() => setData({ ...data, role: option })}
+                      className={`w-full text-left px-5 py-4 rounded-xl border-2 transition ${
+                        data.role === option
+                          ? "border-violet-500 bg-violet-50 dark:bg-violet-900/20"
+                          : "border-gray-200 dark:border-gray-700 hover:border-violet-300 dark:hover:border-violet-700"
+                      }`}
+                    >
+                      <span className="font-medium">{option}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Step 5: Email */}
+            {step === 5 && (
+              <div>
+                <h2 className="text-2xl font-semibold mb-2">What&rsquo;s your email?</h2>
+                <p className="text-sm text-gray-600 dark:text-gray-400 mb-6">
+                  We&rsquo;ll send your personalized recommendations here. No spam, promise!
+                </p>
+                <input
+                  type="email"
+                  value={data.email || ""}
+                  onChange={(e) => setData({ ...data, email: e.target.value })}
+                  placeholder="you@example.com"
+                  className="w-full px-5 py-4 rounded-xl border-2 border-gray-200 dark:border-gray-700 focus:border-violet-500 dark:focus:border-violet-500 outline-none transition bg-white dark:bg-neutral-800"
+                  autoFocus
+                />
+              </div>
+            )}
+
+            {/* Step 6: Frustrations */}
+            {step === 6 && (
+              <div>
+                <h2 className="text-2xl font-semibold mb-2">What&rsquo;s your biggest frustration when choosing tools?</h2>
+                <p className="text-sm text-gray-600 dark:text-gray-400 mb-6">
+                  Select all that apply (optional)
+                </p>
+                <div className="space-y-3">
+                  {[
+                    "Too many options — I don't know which to pick",
+                    "Can't tell if a tool is worth paying for",
+                    "Hard to compare features",
+                    "Most don't integrate with what I use",
+                    "Pricing isn't transparent",
+                  ].map((option) => {
+                    const isSelected = data.frustrations?.includes(option) || false;
+                    return (
+                      <button
+                        key={option}
+                        onClick={() => {
+                          const current = data.frustrations || [];
+                          const updated = isSelected
+                            ? current.filter((f) => f !== option)
+                            : [...current, option];
+                          setData({ ...data, frustrations: updated });
+                        }}
+                        className={`w-full text-left px-5 py-4 rounded-xl border-2 transition ${
+                          isSelected
+                            ? "border-violet-500 bg-violet-50 dark:bg-violet-900/20"
+                            : "border-gray-200 dark:border-gray-700 hover:border-violet-300 dark:hover:border-violet-700"
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <div
+                            className={`w-5 h-5 rounded border-2 flex items-center justify-center ${
+                              isSelected
+                                ? "border-violet-500 bg-violet-500"
+                                : "border-gray-300 dark:border-gray-600"
+                            }`}
+                          >
+                            {isSelected && (
+                              <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                              </svg>
+                            )}
+                          </div>
+                          <span className="font-medium">{option}</span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Error Message */}
+          {error && (
+            <div className="mt-4 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+              <p className="text-sm text-red-800 dark:text-red-200">{error}</p>
+            </div>
           )}
 
-          {step === 6 && (
-            <fieldset>
-              <legend className="text-xl font-semibold">What problem are you trying to solve? <span className="text-sm font-normal text-gray-500">(optional)</span></legend>
-              <textarea className="mt-3 w-full rounded-xl border px-4 py-3" rows={3} placeholder="Optional — a sentence helps us tailor your picks." onChange={(e)=> dispatch({ type: "set", key: "problem", value: e.target.value })} />
-            </fieldset>
-          )}
-        </div>
-
-        <div className="mt-8 grid grid-cols-2 gap-3">
-          <button type="button" onClick={onBack} className="rounded-2xl border px-4 py-3 font-medium hover:bg-neutral-50" disabled={step===1}>Back</button>
-          {step < 6 ? (
-            <button type="button" onClick={onNext} className="w-full rounded-2xl bg-neutral-900 text-white py-3.5 font-medium hover:bg-neutral-800 disabled:opacity-50" disabled={submitting}>Continue</button>
-          ) : (
-            <button type="button" onClick={onSubmit} className="w-full rounded-2xl bg-neutral-900 text-white py-3.5 font-medium hover:bg-neutral-800 disabled:opacity-50" disabled={submitting}>Submit</button>
-          )}
+          {/* Navigation Buttons */}
+          <div className="mt-8 flex gap-3">
+            <button
+              onClick={prevStep}
+              disabled={step === 1}
+              className="px-6 py-3 rounded-xl border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition"
+            >
+              Back
+            </button>
+            <button
+              onClick={nextStep}
+              disabled={isSubmitting}
+              className="flex-1 btn-gradient px-6 py-3 rounded-xl text-white hover:opacity-90 disabled:opacity-50 transition font-medium"
+            >
+              {isSubmitting ? "Submitting..." : step === totalSteps ? "Submit" : "Continue"}
+            </button>
+          </div>
         </div>
       </div>
     </main>
   );
 }
-
-function Success() {
-  return (
-    <main className="min-h-[80vh] mx-auto max-w-md px-4 py-10">
-      <div className="rounded-2xl bg-white/90 dark:bg-neutral-900/90 shadow-sm ring-1 ring-black/5 p-6 md:p-8 text-center">
-        <div className="mx-auto mb-3 h-12 w-12 rounded-full bg-emerald-100 text-emerald-700 grid place-items-center">✅</div>
-        <h1 className="text-2xl md:text-3xl font-semibold tracking-tight">Thanks! We’re preparing your picks.</h1>
-        <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">You’ll receive 2–3 recommendations tailored to your answers.</p>
-        <div className="mt-6 grid grid-cols-2 gap-3">
-          <Link href="/" className="rounded-2xl border px-4 py-3 font-medium hover:bg-neutral-50">Back to home</Link>
-          <Link href="/get-recommendation" className="rounded-2xl bg-neutral-900 text-white px-4 py-3.5 font-medium hover:bg-neutral-800">Retake quiz</Link>
-        </div>
-      </div>
-    </main>
-  );
-}
-
-

@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
 import Script from "next/script";
+import { Suspense } from "react";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import PostHogInit from "./_analytics/PostHogInit";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -14,7 +16,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://rada.example.com"),
+  metadataBase: new URL("https://rada-ai.com"),
   title: {
     default: "Rada — Personalized AI tool advisor",
     template: "%s — Rada",
@@ -39,7 +41,7 @@ export const metadata: Metadata = {
     title: "Rada — Personalized AI tool advisor",
     description:
       "Rada matches your goals, budget, and workflow to the best AI tools.",
-    url: "https://rada.example.com",
+    url: "https://rada-ai.com",
     siteName: "Rada",
     images: [{ url: "/og-image.png", width: 1200, height: 630 }],
     locale: "en_US",
@@ -73,6 +75,9 @@ export default function RootLayout({
           Skip to content
         </a>
         {children}
+        <Suspense fallback={null}>
+          <PostHogInit />
+        </Suspense>
         {/* Plausible analytics (guarded) */}
         {process.env.NEXT_PUBLIC_PLAUSIBLE_DOMAIN ? (
           <Script

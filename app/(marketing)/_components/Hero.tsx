@@ -11,7 +11,7 @@ export type HeroProps = {
 export default function Hero({
   title = "Find the right AI tool — in under a minute.",
   subtitle = "Your personal guide to the right AI tools.",
-  primaryCta = { href: "#lead", label: "Start your recommendation" },
+  primaryCta = { href: "/get-recommendation", label: "Take the quiz now" },
   secondaryCta = { href: "#how", label: "See how it works" },
 }: HeroProps) {
   return (
